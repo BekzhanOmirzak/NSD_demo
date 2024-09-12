@@ -1,6 +1,5 @@
 package com.task.servicediscovery.main
 
-import android.net.nsd.NsdServiceInfo
 import com.task.servicediscovery.model.NsdInfoModel
 
 sealed interface MainIntent {
@@ -13,6 +12,10 @@ sealed interface MainIntent {
 
     data object SendMessageToServices : MainIntent
 
-    data class EnterText(val text: String) : MainIntent
+    data class EnterMessage(val text: String) : MainIntent
+
+    data class EnterMySN(val str: String) : MainIntent
+
+    data class EnterSearchSN(val str: String) : MainIntent
 
 }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
@@ -62,7 +63,7 @@ fun MainScreen(
                     Text(text = btnText)
                 }
 
-                Text(text = "Name : ${state.randomDeviceName} at Port : ${state.randomAvaiPort}")
+                Text(text = "Name : ${state.serviceName} at Port : ${state.randomAvaiPort}")
             }
             Text(
                 text = "Received message : ${state.receivedMessage}",
@@ -79,7 +80,7 @@ fun MainScreen(
                 TextField(
                     value = state.messageToSend,
                     onValueChange = {
-                        onIntent(MainIntent.EnterText(it))
+                        onIntent(MainIntent.EnterMessage(it))
                     },
                     label = {
                         Text(text = "Message")
@@ -124,6 +125,24 @@ fun NearbyServices(state: MainState, onIntent: (MainIntent) -> Unit) {
                 ServiceItem(service = service, onIntent = onIntent)
             }
         }
+
+        TextField(
+            value = state.mySN,
+            onValueChange = {
+                onIntent(MainIntent.EnterMySN(it))
+            },
+            modifier = Modifier.padding(top = 20.dp),
+            label = { Text(text = "My SN") }
+        )
+
+        TextField(
+            value = state.searchSN,
+            onValueChange = {
+                onIntent(MainIntent.EnterSearchSN(it))
+            },
+            modifier = Modifier.padding(top = 10.dp),
+            label = { Text(text = "Search SN") }
+        )
     }
 }
 
@@ -135,10 +154,12 @@ private fun ServiceItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .height(30.dp)
             .clickable {
                 onIntent(MainIntent.ConnectService(service))
             },
-        horizontalArrangement = Arrangement.SpaceBetween
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
         Text(text = service.name)
 

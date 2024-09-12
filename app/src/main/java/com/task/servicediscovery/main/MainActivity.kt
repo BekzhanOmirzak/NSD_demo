@@ -8,9 +8,7 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.getValue
@@ -19,6 +17,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.task.servicediscovery.mapper.toNsdServiceModel
 import com.task.servicediscovery.model.NsdInfoModel
 import com.task.servicediscovery.ui.theme.ServiceDiscoveryTheme
+import com.task.servicediscovery.utils.generatePortInRange
+import com.task.servicediscovery.utils.getCurrentYearMonth
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -28,7 +28,9 @@ import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.net.ServerSocket
 import java.net.Socket
+import java.security.MessageDigest
 import java.util.UUID
+
 
 class MainActivity : ComponentActivity() {
 
@@ -40,6 +42,8 @@ class MainActivity : ComponentActivity() {
 
     private var serverSocket: ServerSocket? = null
     private var mapServices = hashMapOf<String, Socket>()
+    private var startingPort = 10_000
+    private var endingPort = 50_000
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,12 +60,16 @@ class MainActivity : ComponentActivity() {
                         onIntent = {
                             when (it) {
                                 is MainIntent.StartService -> {
-                                    _viewState.update { it.copy(serviceStarted = true) }
+                                    _viewState.update {
+                                        it.copy(serviceStarted = true)
+                                    }
                                     startServiceBroadcasting()
                                 }
 
                                 is MainIntent.StopService -> {
-                                    _viewState.update { it.copy(serviceStarted = false) }
+                                    _viewState.update {
+                                        it.copy(serviceStarted = false)
+                                    }
                                     stopServiceBroadcasting()
                                 }
 
@@ -73,8 +81,26 @@ class MainActivity : ComponentActivity() {
                                     sendingMessageToServices()
                                 }
 
-                                is MainIntent.EnterText -> {
-                                    _viewState.update { state -> state.copy(messageToSend = it.text) }
+                                is MainIntent.EnterMessage -> {
+                                    _viewState.update { state ->
+                                        state.copy(messageToSend = it.text)
+                                    }
+                                }
+
+                                is MainIntent.EnterMySN -> {
+                                    val serviceName = getHashSHAFromSN(it.str)
+                                    _viewState.update { state ->
+                                        state.copy(
+                                            mySN = it.str,
+                                            serviceName = serviceName
+                                        )
+                                    }
+                                }
+
+                                is MainIntent.EnterSearchSN -> {
+                                    _viewState.update { state ->
+                                        state.copy(searchSN = it.str)
+                                    }
                                 }
                             }
                         }
@@ -85,6 +111,20 @@ class MainActivity : ComponentActivity() {
 
         discoverNearbyServices()
         generateRandomNameAndPort()
+    }
+
+    private fun getHashSHAFromSN(sn: String): String {
+        val name = "POS" + getCurrentYearMonth() + sn
+        val digest = MessageDigest.getInstance("SHA-256")
+        val hash = digest.digest(name.toByteArray())
+        val hexString = StringBuilder()
+        for (b in hash) {
+            val hex = Integer.toHexString(0xff and b.toInt())
+            if (hex.length == 1) hexString.append('0')
+            hexString.append(hex)
+        }
+        val min = Math.max(0, hexString.length - 6)
+        return hexString.substring(min).toString()
     }
 
     private fun sendingMessageToServices() {
@@ -116,7 +156,9 @@ class MainActivity : ComponentActivity() {
             _viewState.update { state ->
                 state.copy(
                     messageToSend = "",
-                    services = state.services.map { item -> item.copy(connected = false) })
+                    services = state.services.map { item ->
+                        item.copy(connected = false)
+                    })
             }
 
             mapServices.clear()
@@ -126,7 +168,7 @@ class MainActivity : ComponentActivity() {
     private fun generateRandomNameAndPort() {
         val uuid = UUID.randomUUID().toString()
         val serviceName = uuid.substring(0, 5)
-        _viewState.update { it.copy(randomDeviceName = serviceName, randomAvaiPort = 0) }
+        _viewState.update { it.copy(serviceName = serviceName, randomAvaiPort = 0) }
     }
 
     private fun discoverNearbyServices() {
@@ -137,10 +179,14 @@ class MainActivity : ComponentActivity() {
 
     private fun startServiceBroadcasting() {
         val state = _viewState.value
-        serverSocket = ServerSocket(0)
+        val randomPort = generatePortInRange(
+            from = startingPort,
+            to = endingPort
+        )
+        serverSocket = ServerSocket(randomPort)
         val port = serverSocket?.localPort
         _viewState.update { it.copy(randomAvaiPort = port ?: 0) }
-        registerService(port ?: 0, state.randomDeviceName)
+        registerService(port ?: 0, state.serviceName)
         Thread {
             while (true) {
                 try {
@@ -166,7 +212,7 @@ class MainActivity : ComponentActivity() {
 
                 val outputStream = it.getOutputStream()
                 val writer = PrintWriter(outputStream, true)
-                writer.println("Received by : ${_viewState.value.randomDeviceName}")
+                writer.println("Received by : ${_viewState.value.serviceName}")
             } catch (e: IOException) {
                 e.printStackTrace()
             }
@@ -220,19 +266,35 @@ class MainActivity : ComponentActivity() {
 
         override fun onServiceFound(service: NsdServiceInfo) {
             // A service was found! Do something with it.
+            val foundServicePort = service.port
+            println("Found Service Object : $service")
+            val searchServiceName = getHashSHAFromSN(_viewState.value.searchSN)
+            println("Searching Service Hash Value : $searchServiceName")
+            if (service.serviceName != searchServiceName) {
+                println("On match for service : $service while searching : $searchServiceName")
+                return
+            }
+
             Log.d(TAG, "Service found $service")
-            (getSystemService(Context.NSD_SERVICE) as NsdManager).resolveService(
-                service,
-                object : ResolveListener {
-                    override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
+            (getSystemService(Context.NSD_SERVICE) as NsdManager)
+                .resolveService(
+                    service,
+                    object : ResolveListener {
+                        override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
 
-                    }
+                        }
 
-                    override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                        addService(serviceInfo.toNsdServiceModel())
+                        override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
+                            val fPort = serviceInfo.port
+                            if (fPort !in startingPort..endingPort) {
+                                println("Port not in range : $fPort")
+                                return
+                            }
+
+                            addService(serviceInfo.toNsdServiceModel())
+                        }
                     }
-                }
-            )
+                )
         }
 
         override fun onServiceLost(service: NsdServiceInfo) {
@@ -297,7 +359,7 @@ class MainActivity : ComponentActivity() {
     private fun stopServiceBroadcasting() {
         serverSocket?.close()
         (getSystemService(Context.NSD_SERVICE) as NsdManager).apply {
-            removeService(_viewState.value.randomDeviceName)
+            removeService(_viewState.value.serviceName)
             unregisterService(registrationListener)
         }
     }
