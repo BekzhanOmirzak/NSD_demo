@@ -143,6 +143,16 @@ fun NearbyServices(state: MainState, onIntent: (MainIntent) -> Unit) {
             modifier = Modifier.padding(top = 10.dp),
             label = { Text(text = "Search SN") }
         )
+
+        Button(
+            onClick = {
+                onIntent(MainIntent.SearchingClick)
+            },
+            modifier = Modifier.padding(top = 10.dp)
+        ) {
+            val btnSearchText = if (state.searching) "Stop Searching" else "Start Searching"
+            Text(text = btnSearchText)
+        }
     }
 }
 

@@ -10,5 +10,6 @@ data class MainState(
     val receivedMessage: String = "",
     val messageToSend: String = "From Client",
     val mySN: String = "P211199V00225",
-    val searchSN: String = "P211199V00225"
+    val searchSN: String = "P211199V00225",
+    val searching: Boolean = false
 )

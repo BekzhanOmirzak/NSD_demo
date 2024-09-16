@@ -18,4 +18,6 @@ sealed interface MainIntent {
 
     data class EnterSearchSN(val str: String) : MainIntent
 
+    data object SearchingClick : MainIntent
+
 }

@@ -99,8 +99,21 @@ class MainActivity : ComponentActivity() {
 
                                 is MainIntent.EnterSearchSN -> {
                                     _viewState.update { state ->
-                                        state.copy(searchSN = it.str)
+                                        state.copy(
+                                            searchSN = it.str
+                                        )
                                     }
+                                }
+
+                                MainIntent.SearchingClick -> {
+                                    val searching = !_viewState.value.searching
+                                    _viewState.update {
+                                        it.copy(searching = searching)
+                                    }
+                                    if (searching)
+                                        discoverNearbyServices()
+                                    else
+                                        stopServiceDiscovery()
                                 }
                             }
                         }
@@ -108,9 +121,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-
-        discoverNearbyServices()
-        generateRandomNameAndPort()
     }
 
     private fun getHashSHAFromSN(sn: String): String {
@@ -163,12 +173,6 @@ class MainActivity : ComponentActivity() {
 
             mapServices.clear()
         }.start()
-    }
-
-    private fun generateRandomNameAndPort() {
-        val uuid = UUID.randomUUID().toString()
-        val serviceName = uuid.substring(0, 5)
-        _viewState.update { it.copy(serviceName = serviceName, randomAvaiPort = 0) }
     }
 
     private fun discoverNearbyServices() {
@@ -266,7 +270,6 @@ class MainActivity : ComponentActivity() {
 
         override fun onServiceFound(service: NsdServiceInfo) {
             // A service was found! Do something with it.
-            val foundServicePort = service.port
             println("Found Service Object : $service")
             val searchServiceName = getHashSHAFromSN(_viewState.value.searchSN)
             println("Searching Service Hash Value : $searchServiceName")
@@ -363,4 +366,12 @@ class MainActivity : ComponentActivity() {
             unregisterService(registrationListener)
         }
     }
+
+    private fun stopServiceDiscovery() {
+        (getSystemService(Context.NSD_SERVICE) as NsdManager).stopServiceDiscovery(
+            discoveryListener
+        )
+        _viewState.update { it.copy(services = emptyList()) }
+    }
+
 }
