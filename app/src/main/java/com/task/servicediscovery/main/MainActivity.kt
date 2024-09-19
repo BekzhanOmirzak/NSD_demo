@@ -1,38 +1,50 @@
 package com.task.servicediscovery.main
 
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Notification.Action
+import android.content.BroadcastReceiver
 import android.content.Context
-import android.net.nsd.NsdManager
-import android.net.nsd.NsdManager.ResolveListener
-import android.net.nsd.NsdServiceInfo
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.net.wifi.WpsInfo
+import android.net.wifi.p2p.WifiP2pConfig
+import android.net.wifi.p2p.WifiP2pDevice
+import android.net.wifi.p2p.WifiP2pInfo
+import android.net.wifi.p2p.WifiP2pManager
+import android.net.wifi.p2p.WifiP2pManager.ActionListener
+import android.net.wifi.p2p.WifiP2pManager.ConnectionInfoListener
+import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceInfo
+import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceRequest
+import android.os.Build
 import android.os.Bundle
-import android.util.Log
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.task.servicediscovery.mapper.toNsdServiceModel
-import com.task.servicediscovery.model.NsdInfoModel
+import com.task.servicediscovery.receiver.WiFiDirectBroadcastReceiver
 import com.task.servicediscovery.ui.theme.ServiceDiscoveryTheme
-import com.task.servicediscovery.utils.generatePortInRange
 import com.task.servicediscovery.utils.getCurrentYearMonth
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import java.io.BufferedReader
 import java.io.IOException
-import java.io.InputStreamReader
-import java.io.PrintWriter
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
-import java.util.UUID
 
 
-class MainActivity : ComponentActivity() {
+class MainActivity : ComponentActivity(), ConnectionInfoListener {
 
     private val SERVICE_TYPE = "_flight_tech._tcp"
     private val TAG = MainActivity::class.java.name
@@ -40,10 +52,114 @@ class MainActivity : ComponentActivity() {
     private var _viewState = MutableStateFlow(MainState())
     private var viewState = _viewState.asStateFlow()
 
-    private var serverSocket: ServerSocket? = null
-    private var mapServices = hashMapOf<String, Socket>()
     private var startingPort = 10_000
     private var endingPort = 50_000
+
+    private var SERVER_PORT = 48_321
+
+    private lateinit var manager: WifiP2pManager
+    private lateinit var channel: WifiP2pManager.Channel
+    private lateinit var receiver: BroadcastReceiver
+    private lateinit var intentFilter: IntentFilter
+
+    private var record: HashMap<String, String>? = null
+    private var serviceInfo: WifiP2pDnsSdServiceInfo? = null
+
+    private var recordListener: WifiP2pManager.DnsSdTxtRecordListener? = null
+    private var serviceResponseListener: WifiP2pManager.DnsSdServiceResponseListener? = null
+    private var serviceRequest: WifiP2pDnsSdServiceRequest? = null
+
+    private var mServiceBroadcastingHandler = Handler(Looper.getMainLooper())
+    private var mServiceDiscovering: Handler? = null
+
+    private val requestPermissionsLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+            // Check the results of each requested permission
+            permissions.entries.forEach {
+                when (it.key) {
+                    Manifest.permission.CHANGE_WIFI_STATE -> {
+                        if (it.value) {
+                            // Permission granted
+                            Toast.makeText(this, "CHANGE_WIFI_STATE granted", Toast.LENGTH_SHORT)
+                                .show()
+                        } else {
+                            // Permission denied
+                            Toast.makeText(this, "CHANGE_WIFI_STATE denied", Toast.LENGTH_SHORT)
+                                .show()
+                        }
+                    }
+
+                    Manifest.permission.ACCESS_WIFI_STATE -> {
+                        if (it.value) {
+                            Toast.makeText(this, "ACCESS_WIFI_STATE granted", Toast.LENGTH_SHORT)
+                                .show()
+                        } else {
+                            Toast.makeText(this, "ACCESS_WIFI_STATE denied", Toast.LENGTH_SHORT)
+                                .show()
+                        }
+                    }
+
+                    Manifest.permission.ACCESS_FINE_LOCATION -> {
+                        if (it.value) {
+                            Toast.makeText(this, "ACCESS_FINE_LOCATION granted", Toast.LENGTH_SHORT)
+                                .show()
+                        } else {
+                            Toast.makeText(this, "ACCESS_FINE_LOCATION denied", Toast.LENGTH_SHORT)
+                                .show()
+                        }
+                    }
+
+                    Manifest.permission.NEARBY_WIFI_DEVICES -> {
+                        if (it.value) {
+                            Toast.makeText(this, "NEARBY_WIFI_DEVICES granted", Toast.LENGTH_SHORT)
+                                .show()
+                        } else {
+                            Toast.makeText(this, "NEARBY_WIFI_DEVICES denied", Toast.LENGTH_SHORT)
+                                .show()
+                        }
+                    }
+                }
+            }
+        }
+
+    private fun requestPermissionsIfNecessary() {
+        // List of required permissions
+        val requiredPermissions = mutableListOf(
+            Manifest.permission.CHANGE_WIFI_STATE,
+            Manifest.permission.ACCESS_WIFI_STATE,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+
+        // NEARBY_WIFI_DEVICES is required for Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requiredPermissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
+
+        // Filter out permissions that are already granted
+        val permissionsToRequest = requiredPermissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        // Request missing permissions
+        if (permissionsToRequest.isNotEmpty()) {
+            requestPermissionsLauncher.launch(permissionsToRequest.toTypedArray())
+        } else {
+            Toast.makeText(this, "All permissions are already granted", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+
+    private fun initializeWiFiP2P() {
+        manager = getSystemService(Context.WIFI_P2P_SERVICE) as WifiP2pManager
+        channel = manager.initialize(this, mainLooper, null)
+
+        intentFilter = IntentFilter().apply {
+            addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
+            addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
+            addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
+            addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,7 +171,8 @@ class MainActivity : ComponentActivity() {
 
                     val state by viewState.collectAsStateWithLifecycle()
 
-                    MainScreen(modifier = Modifier.padding(innerPadding),
+                    MainScreen(
+                        modifier = Modifier.padding(innerPadding),
                         state = state,
                         onIntent = {
                             when (it) {
@@ -63,22 +180,20 @@ class MainActivity : ComponentActivity() {
                                     _viewState.update {
                                         it.copy(serviceStarted = true)
                                     }
-                                    startServiceBroadcasting()
+                                    registerLocalService()
                                 }
 
                                 is MainIntent.StopService -> {
                                     _viewState.update {
                                         it.copy(serviceStarted = false)
                                     }
-                                    stopServiceBroadcasting()
+                                    unregisterLocalService()
                                 }
 
                                 is MainIntent.ConnectService -> {
-                                    connectToService(it.service)
                                 }
 
                                 is MainIntent.SendMessageToServices -> {
-                                    sendingMessageToServices()
                                 }
 
                                 is MainIntent.EnterMessage -> {
@@ -91,8 +206,7 @@ class MainActivity : ComponentActivity() {
                                     val serviceName = getHashSHAFromSN(it.str)
                                     _viewState.update { state ->
                                         state.copy(
-                                            mySN = it.str,
-                                            serviceName = serviceName
+                                            mySN = it.str, serviceName = serviceName
                                         )
                                     }
                                 }
@@ -110,18 +224,206 @@ class MainActivity : ComponentActivity() {
                                     _viewState.update {
                                         it.copy(searching = searching)
                                     }
-                                    if (searching)
-                                        discoverNearbyServices()
-                                    else
-                                        stopServiceDiscovery()
+                                    if (searching) {
+                                        mServiceDiscovering = Handler(Looper.getMainLooper())
+                                        discoverServiceStart()
+                                    } else mServiceDiscovering = null
                                 }
                             }
-                        }
-                    )
+                        })
                 }
             }
         }
+
+        initializeWiFiP2P()
+        requestPermissionsIfNecessary()
     }
+
+    @SuppressLint("MissingPermission")
+    private fun registerLocalService() {
+        //  Create a string map containing information about your service.
+        record = hashMapOf(
+            "listenport" to SERVER_PORT.toString(),
+            "buddyname" to "Second${(Math.random() * 1000).toInt()}",
+            "available" to "visible"
+        )
+
+        // Service information.  Pass it an instance name, service type
+        // _protocol._transportlayer , and the map containing
+        // information other devices will want once they connect to this one.
+
+
+        // Add the local service, sending the service info, network channel,
+        // and listener that will be used to indicate success or failure of
+        // the request.
+        manager.clearLocalServices(channel, object : ActionListener {
+            override fun onSuccess() {
+
+                println("onSuccess on clearing Local Services")
+
+                serviceInfo =
+                    WifiP2pDnsSdServiceInfo.newInstance("_secondt", "_presence2._tcp", record)
+
+                manager.addLocalService(channel, serviceInfo, object : ActionListener {
+                    override fun onSuccess() {
+                        // Command successful! Code isn't necessarily needed here,
+                        // Unless you want to update the UI or add logging statements.
+                        println("On Success registration the service")
+                        mServiceBroadcastingHandler.postDelayed(
+                            mServiceBroadcastingRunnable, 12_000L
+                        )
+                    }
+
+                    override fun onFailure(arg0: Int) {
+                        // Command failed.  Check for P2P_UNSUPPORTED, ERROR, or BUSY
+                        println("On Failure registration the service : $arg0")
+                    }
+                })
+            }
+
+            override fun onFailure(reason: Int) {
+                println("onFailure on clearing Local Services")
+            }
+        })
+    }
+
+    private val mServiceBroadcastingRunnable: Runnable = object : Runnable {
+        @SuppressLint("MissingPermission")
+        override fun run() {
+            manager.discoverPeers(channel, object : ActionListener {
+                override fun onSuccess() {
+                    println("Discovering peers called successfully")
+                }
+
+                override fun onFailure(error: Int) {
+                    println("Discovering peers called with error: $error")
+                }
+            })
+            mServiceBroadcastingHandler.postDelayed(this, 3000L)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun unregisterLocalService() {
+        serviceInfo?.let {
+            manager.removeLocalService(channel, serviceInfo, object : ActionListener {
+                override fun onSuccess() {
+                    println("On Success removing the service")
+                }
+
+                override fun onFailure(arg0: Int) {
+                    println("On Failure removing the service : $arg0")
+                }
+            })
+        }
+    }
+
+    private val buddies = mutableMapOf<String, String>()
+
+    @SuppressLint("MissingPermission")
+    private fun discoverServiceStart() {
+        // Create a DNS-SD TXT record listener
+        recordListener = WifiP2pManager.DnsSdTxtRecordListener { fullDomain, record, device ->
+            println("DnsSdTxtRecord available - $record")
+
+            // Extract the buddy name from the TXT record and associate it with the device address
+            record["buddyname"]?.let {
+                buddies[device.deviceAddress] = it
+            }
+        }
+
+        // Create a DNS-SD service response listener
+        serviceResponseListener =
+            WifiP2pManager.DnsSdServiceResponseListener { instanceName: String,
+                                                          registrationType: String,
+                                                          resourceType: WifiP2pDevice ->
+                println(
+                    "onBonjourServiceAvailable - $instanceName, device: ${resourceType.deviceName}"
+                )
+
+                // Use the buddy name from the TXT record, if available
+                resourceType.deviceName =
+                    buddies[resourceType.deviceAddress] ?: resourceType.deviceName
+                connectToService(resourceType)
+            }
+
+        manager.setDnsSdResponseListeners(channel, serviceResponseListener, recordListener)
+
+        manager.clearServiceRequests(channel, object : ActionListener {
+            override fun onSuccess() {
+                println("Service request removed successfully")
+
+                // Create a service request
+                val serviceRequest = WifiP2pDnsSdServiceRequest.newInstance()
+
+                // Add the service request and start discovering services
+                manager.addServiceRequest(channel, serviceRequest, object : ActionListener {
+                    override fun onSuccess() {
+                        println("Service request added successfully")
+
+                        // Start service discovery
+                        manager.discoverServices(channel, object : ActionListener {
+                            override fun onSuccess() {
+                                println("Service discovery initiated")
+                                mServiceDiscovering?.postDelayed(
+                                    {
+                                        discoverServiceStart()
+                                    }, 10_000L
+                                )
+                            }
+
+                            override fun onFailure(reason: Int) {
+                                println("Service discovery failed: $reason")
+                            }
+                        })
+
+                    }
+
+                    override fun onFailure(reason: Int) {
+                        println("Failed to add service request: $reason")
+                    }
+                })
+            }
+
+            override fun onFailure(reason: Int) {
+                println("On Failure clear services requests: $reason")
+            }
+
+        })
+
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun connectToService(device: WifiP2pDevice) {
+        // Create WifiP2pConfig object to initiate the connection
+        val config = WifiP2pConfig().apply {
+            deviceAddress = device.deviceAddress
+            wps.setup = WpsInfo.PBC  // You can change to WpsInfo.KEYPAD if required
+        }
+
+        // Initiate connection with the discovered device
+        manager.connect(channel, config, object : ActionListener {
+            override fun onSuccess() {
+                println("Connection initiated with ${device.deviceName}")
+            }
+
+            override fun onFailure(reason: Int) {
+                println("Connection failed: $reason")
+            }
+        })
+    }
+
+    override fun onResume() {
+        super.onResume()
+        receiver = WiFiDirectBroadcastReceiver(manager, channel, this)
+        registerReceiver(receiver, intentFilter)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        unregisterReceiver(receiver)
+    }
+
 
     private fun getHashSHAFromSN(sn: String): String {
         val name = "POS" + getCurrentYearMonth() + sn
@@ -137,241 +439,80 @@ class MainActivity : ComponentActivity() {
         return hexString.substring(min).toString()
     }
 
-    private fun sendingMessageToServices() {
-        val message = _viewState.value.messageToSend
-        if (message.isEmpty()) return
-        println("Sending message to services : $message")
+    override fun onConnectionInfoAvailable(info: WifiP2pInfo?) {
+        println("onConnectionInfoAvailable object : $info")
+        val isGroupOwner = info?.isGroupOwner ?: return
+
+        // Get the group owner's IP address
+        val groupOwnerAddress = info.groupOwnerAddress?.hostAddress ?: return
+        _viewState.update { it.copy(mySN = "IsGroup Owner : $isGroupOwner") }
+        if (isGroupOwner) {
+            println("I am the group owner. Waiting for a connection.")
+            // Start a server to listen for incoming connections
+            startServerSocket()
+        } else {
+            println("I am not the group owner. Connecting to the group owner at $groupOwnerAddress.")
+            // Connect to the group owner's server
+            connectToServer(groupOwnerAddress)
+        }
+    }
+
+    private fun startServerSocket() {
         Thread {
-            for ((serviceName, socket) in mapServices) {
-                val outputStream = socket.getOutputStream()
-                PrintWriter(outputStream, true).println(message)
-                val inputStream = socket.getInputStream()
-                val response =
-                    BufferedReader(InputStreamReader(inputStream)).readLine() ?: "no response"
-                _viewState.update {
-                    it.copy(
-                        services = it.services.map { model ->
-                            if (model.name == serviceName) {
-                                model.copy(
-                                    reply = response
-                                )
-                            } else
-                                model
-                        }
-                    )
-                }
-                socket.close()
-            }
-
-            _viewState.update { state ->
-                state.copy(
-                    messageToSend = "",
-                    services = state.services.map { item ->
-                        item.copy(connected = false)
-                    })
-            }
-
-            mapServices.clear()
-        }.start()
-    }
-
-    private fun discoverNearbyServices() {
-        (getSystemService(Context.NSD_SERVICE) as NsdManager).discoverServices(
-            SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener
-        )
-    }
-
-    private fun startServiceBroadcasting() {
-        val state = _viewState.value
-        val randomPort = generatePortInRange(
-            from = startingPort,
-            to = endingPort
-        )
-        serverSocket = ServerSocket(randomPort)
-        val port = serverSocket?.localPort
-        _viewState.update { it.copy(randomAvaiPort = port ?: 0) }
-        registerService(port ?: 0, state.serviceName)
-        Thread {
-            while (true) {
-                try {
-                    val clientSocket = serverSocket?.accept() // Ожидаем подключений
-                    println("After accepting client accept method")
-                    handleClient(clientSocket) // Обрабатываем подключение
-                } catch (e: IOException) {
-                    e.printStackTrace()
-                    break
-                }
-            }
-        }.start()
-    }
-
-    private fun handleClient(clientSocket: Socket?) {
-        clientSocket?.let {
             try {
-                val inputStream = it.getInputStream()
-                val reader = BufferedReader(InputStreamReader(inputStream))
-                val message = reader.readLine() // Читаем сообщение клиента
-                println("Message is being read : $message")
-                _viewState.update { it.copy(receivedMessage = message) }
+                // Create a server socket to listen for incoming connections
+                val serverSocket = ServerSocket(8800)
+                println("Server: Socket opened, waiting for connection...")
 
-                val outputStream = it.getOutputStream()
-                val writer = PrintWriter(outputStream, true)
-                writer.println("Received by : ${_viewState.value.serviceName}")
+                // Accept an incoming connection
+                val clientSocket = serverSocket.accept()
+                println("Server: Connection established with a peer.")
+
+                // Receive data from the peer
+                val inputStream = clientSocket.getInputStream()
+                val receivedData = ByteArray(1024)
+                inputStream.read(receivedData)
+                println("Received data: ${String(receivedData)}")
+
+                // Optionally, send data back to the peer
+                val outputStream = clientSocket.getOutputStream()
+                val message = "Hello from server!"
+                outputStream.write(message.toByteArray())
+
+                // Close the socket
+                clientSocket.close()
+                serverSocket.close()
             } catch (e: IOException) {
                 e.printStackTrace()
             }
-        }
-    }
-
-    fun registerService(port: Int, name: String) {
-        val serviceInfo = NsdServiceInfo().apply {
-            serviceName = name
-            serviceType = SERVICE_TYPE
-            setPort(port)
-        }
-
-        (getSystemService(Context.NSD_SERVICE) as NsdManager).apply {
-            registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
-        }
-    }
-
-    private val registrationListener = object : NsdManager.RegistrationListener {
-
-        override fun onServiceRegistered(nsdServiceInfo: NsdServiceInfo) {
-            // Save the service name. Android may have changed it in order to
-            // resolve a conflict, so update the name you initially requested
-            // with the name Android actually used.
-            println("On Service registered $nsdServiceInfo")
-        }
-
-        override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-            // Registration failed! Put debugging code here to determine why.
-            println("Service registration failed : $serviceInfo errorCode: $errorCode")
-        }
-
-        override fun onServiceUnregistered(arg0: NsdServiceInfo) {
-            // Service has been unregistered. This only happens when you call
-            // NsdManager.unregisterService() and pass in this listener.
-            println("Service registration unregistered : $arg0")
-        }
-
-        override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-            // Unregistration failed. Put debugging code here to determine why.
-            println("Service UnRegistration failed : $serviceInfo  ErrorCode: $errorCode")
-        }
-    }
-
-    private val discoveryListener = object : NsdManager.DiscoveryListener {
-
-        // Called as soon as service discovery begins.
-        override fun onDiscoveryStarted(regType: String) {
-            Log.d(TAG, "Service discovery started")
-        }
-
-        override fun onServiceFound(service: NsdServiceInfo) {
-            // A service was found! Do something with it.
-            println("Found Service Object : $service")
-            val searchServiceName = getHashSHAFromSN(_viewState.value.searchSN)
-            println("Searching Service Hash Value : $searchServiceName")
-            if (service.serviceName != searchServiceName) {
-                println("On match for service : $service while searching : $searchServiceName")
-                return
-            }
-
-            Log.d(TAG, "Service found $service")
-            (getSystemService(Context.NSD_SERVICE) as NsdManager)
-                .resolveService(
-                    service,
-                    object : ResolveListener {
-                        override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
-
-                        }
-
-                        override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                            val fPort = serviceInfo.port
-                            if (fPort !in startingPort..endingPort) {
-                                println("Port not in range : $fPort")
-                                return
-                            }
-
-                            addService(serviceInfo.toNsdServiceModel())
-                        }
-                    }
-                )
-        }
-
-        override fun onServiceLost(service: NsdServiceInfo) {
-            // When the network service is no longer available.
-            // Internal bookkeeping code goes here.
-            Log.e(TAG, "Service lost: $service")
-            removeService(service.serviceName)
-        }
-
-        override fun onDiscoveryStopped(serviceType: String) {
-            Log.i(TAG, "Discovery stopped: $serviceType")
-        }
-
-        override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-            Log.e(TAG, "Start Discovery failed: Error code:$errorCode")
-
-        }
-
-        override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
-            Log.e(TAG, "Stop Discovery failed: Error code:$errorCode")
-        }
-    }
-
-    private fun connectToService(service: NsdInfoModel) {
-        Thread {
-            try {
-                val socket = Socket(service.ip, service.port)
-//                val outputStream = socket.getOutputStream()
-//                val writer = PrintWriter(outputStream, true)
-//                val inputStream = socket.getInputStream()
-//                val reader = BufferedReader(InputStreamReader(inputStream))
-                mapServices[service.name] = socket
-                _viewState.update {
-                    it.copy(
-                        services = it.services.map { model ->
-                            if (model.name == service.name)
-                                model.copy(connected = true)
-                            else
-                                model
-                        }
-                    )
-                }
-                println("After connecting to the service name : ${service.name}")
-            } catch (e: IOException) {
-                Log.e(TAG, "Error connecting to service: ${e.message}")
-            }
         }.start()
     }
 
-    private fun addService(service: NsdInfoModel) {
-        val services = viewState.value.services.toMutableList()
-        services.add(service)
-        _viewState.update { it.copy(services = services) }
-    }
+    private fun connectToServer(groupOwnerAddress: String) {
+        Thread {
+            try {
+                // Create a socket and connect to the group owner (server)
+                val socket = Socket()
+                socket.connect(InetSocketAddress(groupOwnerAddress, 8800), 5000)
+                println("Client: Connected to server.")
 
-    private fun removeService(serviceName: String) {
-        val services = viewState.value.services.toMutableList()
-        services.removeIf { it.name == serviceName }
-        _viewState.update { it.copy(services = services) }
-    }
+                // Send data to the server
+                val outputStream = socket.getOutputStream()
+                val message = "Hello from client!"
+                outputStream.write(message.toByteArray())
 
-    private fun stopServiceBroadcasting() {
-        serverSocket?.close()
-        (getSystemService(Context.NSD_SERVICE) as NsdManager).apply {
-            removeService(_viewState.value.serviceName)
-            unregisterService(registrationListener)
-        }
-    }
+                // Receive data from the server
+                val inputStream = socket.getInputStream()
+                val receivedData = ByteArray(1024)
+                inputStream.read(receivedData)
+                println("Received data: ${String(receivedData)}")
 
-    private fun stopServiceDiscovery() {
-        (getSystemService(Context.NSD_SERVICE) as NsdManager).stopServiceDiscovery(
-            discoveryListener
-        )
-        _viewState.update { it.copy(services = emptyList()) }
+                // Close the socket
+                socket.close()
+            } catch (e: IOException) {
+                e.printStackTrace()
+            }
+        }.start()
     }
 
 }
