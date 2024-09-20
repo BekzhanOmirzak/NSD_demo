@@ -163,6 +163,8 @@ class MainActivity : ComponentActivity(), ConnectionInfoListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val apiLevel = Build.VERSION.SDK_INT
+        println("Api Level now is : $apiLevel")
         setContent {
             ServiceDiscoveryTheme {
                 Scaffold(
